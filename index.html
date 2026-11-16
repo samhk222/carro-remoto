@@ -73,6 +73,20 @@
   .speed output { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 700; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
 
+  .info { width: 100%; max-width: 420px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { background: var(--panel); border-radius: 12px; padding: 12px 14px; }
+  .card small { display: block; color: var(--muted); font-size: .8rem; margin-bottom: 4px; }
+  .dist { font-size: 1.6rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .dist.perto { color: var(--err); } .dist.medio { color: var(--accent); } .dist.livre { color: var(--ok); }
+  .auto {
+    border: 0; border-radius: 12px; padding: 12px 14px; text-align: left; cursor: pointer;
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  .auto b { font-size: 1.05rem; }
+  .auto.on { background: var(--ok); color: #06210f; }
+  .auto.on small { color: #0d3d1d; }
+  .auto:disabled { opacity: .4; cursor: default; }
+
   .hint { max-width: 420px; font-size: .85rem; color: var(--muted); text-align: center; line-height: 1.4; margin: 0; }
   .warn { max-width: 420px; background: #3a2a10; color: #ffd58a; border-radius: 12px; padding: 12px 14px; font-size: .9rem; line-height: 1.4; display: none; }
 </style>
@@ -90,6 +104,17 @@
 
   <button class="connect" id="connect">Conectar</button>
 
+  <div class="info">
+    <div class="card">
+      <small>Distância à frente</small>
+      <div class="dist" id="dist">—</div>
+    </div>
+    <button class="auto" id="auto" disabled>
+      <small>Modo automático</small>
+      <b id="autoText">Desligado</b>
+    </button>
+  </div>
+
   <div class="pad" id="pad">
     <button class="up" data-cmd="F" aria-label="Frente">▲</button>
     <button class="left" data-cmd="L" aria-label="Esquerda">◀</button>
@@ -103,12 +128,15 @@
     <input type="range" id="speed" min="60" max="255" value="100">
   </div>
 
-  <p class="hint">Segure um botão para andar e solte para parar. No computador, use as setas do teclado.</p>
+  <p class="hint" id="hint">Segure um botão para andar e solte para parar. No computador, use as setas do teclado.</p>
 
 <script>
   const SERVICE_UUID = 'b6a1c0de-4f3a-4c8e-9d2a-7c1e5a0f1001';
   const CHAR_UUID    = 'b6a1c0de-4f3a-4c8e-9d2a-7c1e5a0f1002';
+  const STATUS_UUID  = 'b6a1c0de-4f3a-4c8e-9d2a-7c1e5a0f1003';
   const REPEAT_MS = 150;
+  const HINT_MANUAL = 'Segure um botão para andar e solte para parar. No computador, use as setas do teclado.';
+  const HINT_AUTO = 'O carro está dirigindo sozinho: para a menos de 5 cm, vira à direita entre 5 e 10 cm, à esquerda entre 10 e 20 cm e acelera acima disso. Toque em PARAR para voltar ao controle manual.';
 
   const $ = (id) => document.getElementById(id);
   const connectBtn = $('connect');
@@ -121,6 +149,8 @@
   let repeatTimer = null;
   let sending = false;
   let pending = null;
+  let autoMode = false;
+  const autoBtn = $('auto');
 
   try {
     const saved = localStorage.getItem('velocidade');
@@ -138,8 +168,45 @@
     $('statusText').textContent = label || (on ? 'Conectado' : 'Desconectado');
     connectBtn.textContent = on ? 'Desconectar' : 'Conectar';
     connectBtn.classList.toggle('disconnect', on);
-    padButtons.forEach((b) => (b.disabled = !on));
+    autoBtn.disabled = !on;
+    if (!on) {
+      showDistance(null);
+      setAutoMode(false);
+    }
+    updatePad();
   }
+
+  function updatePad() {
+    const on = !!characteristic;
+    // No modo automático, só o PARAR fica ativo (ele volta para o manual).
+    padButtons.forEach((b) => (b.disabled = !on || (autoMode && b.dataset.cmd !== 'S')));
+  }
+
+  function setAutoMode(on) {
+    autoMode = on;
+    autoBtn.classList.toggle('on', on);
+    $('autoText').textContent = on ? 'Ligado' : 'Desligado';
+    $('hint').textContent = on ? HINT_AUTO : HINT_MANUAL;
+    updatePad();
+  }
+
+  function showDistance(cm) {
+    const el = $('dist');
+    el.className = 'dist';
+    if (cm === null) { el.textContent = '—'; return; }
+    if (cm === 0) { el.textContent = 'livre'; el.classList.add('livre'); return; }
+    el.textContent = cm + ' cm';
+    el.classList.add(cm < 5 ? 'perto' : cm <= 20 ? 'medio' : 'livre');
+  }
+
+  function onStatus(event) {
+    const v = event.target.value;
+    if (v.byteLength < 3) return;
+    showDistance(v.getUint16(0, true));
+    const auto = v.getUint8(2) === 1;
+    if (auto !== autoMode) setAutoMode(auto);
+  }
+
   setConnected(false);
 
   // Envia sem sobrepor escritas (o BLE não aceita duas ao mesmo tempo).
@@ -166,6 +233,7 @@
 
   function start(cmd) {
     if (cmd === 'S') return stop();
+    if (autoMode) return;
     currentCmd = cmd;
     padButtons.forEach((b) => b.classList.toggle('active', b.dataset.cmd === cmd));
     send(cmd);
@@ -178,8 +246,27 @@
     clearInterval(repeatTimer);
     repeatTimer = null;
     padButtons.forEach((b) => b.classList.remove('active'));
-    send('S');
+    if (autoMode) {
+      setAutoMode(false);
+      send('M');
+    } else {
+      send('S');
+    }
   }
+
+  autoBtn.addEventListener('click', () => {
+    if (!characteristic) return;
+    if (autoMode) {
+      stop();
+    } else {
+      clearInterval(repeatTimer);
+      repeatTimer = null;
+      currentCmd = 'S';
+      padButtons.forEach((b) => b.classList.remove('active'));
+      setAutoMode(true);
+      send('A');
+    }
+  });
 
   padButtons.forEach((btn) => {
     btn.addEventListener('pointerdown', (e) => {
@@ -208,10 +295,12 @@
   speedInput.addEventListener('input', () => {
     $('speedOut').textContent = speedInput.value;
     try { localStorage.setItem('velocidade', speedInput.value); } catch (e) {}
-    if (currentCmd !== 'S') send(currentCmd);
+    if (autoMode) send('A');
+    else if (currentCmd !== 'S') send(currentCmd);
   });
 
-  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
+  // Sair da página para o carro no modo manual; o automático continua sozinho.
+  document.addEventListener('visibilitychange', () => { if (document.hidden && !autoMode) stop(); });
 
   function onDisconnected() {
     clearInterval(repeatTimer);
@@ -240,6 +329,13 @@
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService(SERVICE_UUID);
       characteristic = await service.getCharacteristic(CHAR_UUID);
+      try {
+        const status = await service.getCharacteristic(STATUS_UUID);
+        status.addEventListener('characteristicvaluechanged', onStatus);
+        await status.startNotifications();
+      } catch (e) {
+        console.warn('Firmware sem sensor de distância', e);
+      }
       setConnected(true, 'Conectado: ' + (device.name || 'Carrinho'));
     } catch (e) {
       console.warn(e);
