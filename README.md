@@ -23,3 +23,4 @@ O carro para sozinho se você soltar o botão, sair da página ou perder a conex
 | GND | GND |
 
 OUT1/OUT2 = motor direito, OUT3/OUT4 = motor esquerdo.
+# carro-remoto
